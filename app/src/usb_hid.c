@@ -6,6 +6,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/init.h>
+#include <zephyr/drivers/gpio.h>
 
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/usb/class/usb_hid.h>
@@ -184,6 +185,8 @@ static const struct hid_ops ops = {
     .set_report = set_report_cb,
 };
 
+
+
 static int zmk_usb_hid_send_report(const uint8_t *report, size_t len) {
     switch (zmk_usb_get_status()) {
     case USB_DC_SUSPEND:
@@ -200,6 +203,7 @@ static int zmk_usb_hid_send_report(const uint8_t *report, size_t len) {
         if (err) {
             k_sem_give(&hid_sem);
         }
+
 
         return err;
     }

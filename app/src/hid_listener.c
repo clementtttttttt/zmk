@@ -16,6 +16,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <dt-bindings/zmk/hid_usage_pages.h>
 #include <zmk/endpoints.h>
 
+#include <zephyr/drivers/gpio.h>
+
 static int hid_listener_keycode_pressed(const struct zmk_keycode_state_changed *ev) {
     int err, explicit_mods_changed, implicit_mods_changed;
 
@@ -96,14 +98,214 @@ static int hid_listener_keycode_released(const struct zmk_keycode_state_changed 
     return zmk_endpoints_send_report(ev->usage_page);
 }
 
+
+K_THREAD_STACK_DEFINE(ps2_stack, 2048);
+
+static struct k_thread ps2_thread;
+enum kb_report_idx {
+	RP_ID = 0,
+	KB_MOD_KEY ,
+	KB_RESERVED,
+	KB_KEY_CODE1,
+	KB_KEY_CODE2,
+	KB_KEY_CODE3,
+	KB_KEY_CODE4,
+	KB_KEY_CODE5,
+	KB_KEY_CODE6,
+	KB_REPORT_COUNT,
+};
+
+static void clk_cycle( const struct gpio_dt_spec *d){
+		k_sleep(K_USEC(5));
+
+		gpio_pin_set_dt(d, 0);
+		k_sleep(K_USEC(77));
+		gpio_pin_set_dt(d, 1);
+		k_sleep(K_USEC(77));
+
+}
+
+static void ps2_send_byte(uint8_t in){
+	static const struct gpio_dt_spec PS2_CK =
+		GPIO_DT_SPEC_GET(DT_NODELABEL(ps2ck), gpios );
+	static const struct gpio_dt_spec PS2_DO =
+		GPIO_DT_SPEC_GET(DT_NODELABEL(ps2do), gpios);
+
+		
+	gpio_pin_set_dt(&PS2_DO, 1);
+	clk_cycle(&PS2_CK);
+	
+	char numbits = 0;
+	
+	for(int i=0; i<8; ++i){
+			if(in & 1) ++numbits;
+			gpio_pin_set_dt(&PS2_DO, in & 1);
+			clk_cycle(&PS2_CK);
+			in >>= 1;
+	}
+	
+	gpio_pin_set_dt(&PS2_DO, !(numbits & 1));
+	clk_cycle(&PS2_CK);
+	
+	gpio_pin_set_dt(&PS2_DO, 1);
+	clk_cycle(&PS2_CK);
+		k_sleep(K_USEC(77* 2));
+
+
+}
+
+uint8_t old_mods = 0;
+
+static void ps2_write_report(const struct zmk_keycode_state_changed *in){
+		
+		uint16_t  ps2_mapping_table[] = {
+			0x1c,
+			0x32,
+			0x21,
+			0x23,
+			0x24,
+			0x2b,
+			0x34,
+			0x33,
+			0x43,
+			0x3b,
+			0x42,
+			0x4b,
+			0x3a,
+			0x31,
+			0x44,
+			0x4d,
+			0x15,
+			0x2d,
+			0x1b,
+			0x2c,
+			0x3c,
+			0x2a,
+			0x1d,
+			0x22,
+			0x35,
+			0x1a,
+			0x16,
+			0x1e,
+			0x26,
+			0x25,
+			0x2e,
+			0x36,
+			0x3d,
+			0x3e,
+			0x46,
+			0x45,
+			0x5a,
+			0x76,
+			0x66,
+			0xd,
+			0x29,
+			0x4e,
+			0x55,
+			0x54,
+			0x5b,
+			0x5d,
+			0x5d,
+			0x4c,
+			0x52,
+			0x0e,
+			0x41,
+			0x49,
+			0x4a,
+			0x58,
+			0x05,
+			0x6,
+			0x4,
+			0xc,
+			0x3,
+			0xb,
+			0x83,
+			0x0a,
+			0x01,
+			0x09,
+			0x78,
+			0x07,
+			0x17c,
+			0x7e
+			
+		};
+		
+		uint16_t mod_mappings[]={
+			0x14,
+			0x12,
+			0x11,
+			0xF0CC,
+			0x11d,
+			0x159,
+			0x138,
+			0xF0CC
+		};
+		
+		if(in->explicit_modifiers != old_mods){
+							uint8_t mods = in->explicit_modifiers;
+
+			for(int i=0;i<8; ++i){
+				if((old_mods & 1) && !(mods & 1)){
+					if(mod_mappings[i] == 0xf0cc) continue;
+					if(mod_mappings[i] & 0x100) ps2_send_byte(0xe0);
+					ps2_send_byte(0xf0);
+					ps2_send_byte(mod_mappings[i] & 0xff);
+				}
+				if(!(old_mods & 1) && (mods & 1)){
+					if(mod_mappings[i] == 0xf0cc) continue;
+					if(mod_mappings[i] & 0x100) ps2_send_byte(0xe0);
+					ps2_send_byte(mod_mappings[i] & 0xff);
+				}
+				old_mods>>=1;
+				mods >>=1;
+			}
+			old_mods = 		in->explicit_modifiers;
+		}
+		
+		if(in->keycode >= 4){
+		
+		
+			uint16_t newcode = ps2_mapping_table[in->keycode - 4];
+			if(newcode & 0x100){
+				ps2_send_byte(0xe0);
+			}
+			
+			if(!in->state) ps2_send_byte(0xf0);
+			
+			ps2_send_byte(newcode);
+		}
+
+}
+
+
+void ps2_start_send(const struct zmk_keycode_state_changed *in){
+		k_tid_t blink_tid = k_thread_create(&ps2_thread,          // Thread struct
+		                              ps2_stack,            // Stack
+                               K_THREAD_STACK_SIZEOF(ps2_stack),
+                               ps2_write_report,     // Entry point
+                            in,                  // arg_1‎
+                               NULL,                   // arg_2‎
+                            NULL,                   // arg_3‎
+                            7,                      // Priority‎
+                                                            0,                      // Options‎
+                               K_NO_WAIT);             // Delay
+		k_thread_join(&ps2_thread, K_MSEC(2));
+	
+
+}
+
 int hid_listener(const zmk_event_t *eh) {
     const struct zmk_keycode_state_changed *ev = as_zmk_keycode_state_changed(eh);
     if (ev) {
+		
+		
         if (ev->state) {
             hid_listener_keycode_pressed(ev);
         } else {
             hid_listener_keycode_released(ev);
         }
+		//ps2_start_send(ev);
+		ps2_write_report(ev);
     }
     return 0;
 }
