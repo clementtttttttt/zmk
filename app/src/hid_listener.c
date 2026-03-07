@@ -116,12 +116,12 @@ enum kb_report_idx {
 };
 
 static void clk_cycle( const struct gpio_dt_spec *d){
-		k_sleep(K_USEC(5));
+		k_busy_wait(5);
 
 		gpio_pin_set_dt(d, 0);
-		k_sleep(K_USEC(77));
+		k_busy_wait(30);
 		gpio_pin_set_dt(d, 1);
-		k_sleep(K_USEC(77));
+		k_busy_wait(30);
 
 }
 
@@ -132,7 +132,7 @@ static void ps2_send_byte(uint8_t in){
 		GPIO_DT_SPEC_GET(DT_NODELABEL(ps2do), gpios);
 
 		
-	gpio_pin_set_dt(&PS2_DO, 1);
+	gpio_pin_set_dt(&PS2_DO, 0);
 	clk_cycle(&PS2_CK);
 	
 	char numbits = 0;
@@ -149,8 +149,8 @@ static void ps2_send_byte(uint8_t in){
 	
 	gpio_pin_set_dt(&PS2_DO, 1);
 	clk_cycle(&PS2_CK);
-		k_sleep(K_USEC(77* 2));
-
+	//k_sleep(K_USEC(77* 5/));
+	k_sleep(K_MSEC(5));
 
 }
 
@@ -227,8 +227,7 @@ static void ps2_write_report(const struct zmk_keycode_state_changed *in){
 			0x07,
 			0x17c,
 			0x7e,
-			0x17e,
-			0x0,
+			0x17e, //pause or ctrl pause
 			0x170,
 			0x16c,
 			0x17d,
@@ -405,6 +404,8 @@ static void ps2_write_report(const struct zmk_keycode_state_changed *in){
 
 
 void ps2_start_send(const struct zmk_keycode_state_changed *in){
+			k_thread_join(&ps2_thread, K_MSEC(100));
+
 		k_tid_t blink_tid = k_thread_create(&ps2_thread,          // Thread struct
 		                              ps2_stack,            // Stack
                                K_THREAD_STACK_SIZEOF(ps2_stack),
@@ -415,11 +416,10 @@ void ps2_start_send(const struct zmk_keycode_state_changed *in){
                             7,                      // Priority‎
                                                             0,                      // Options‎
                                K_NO_WAIT);             // Delay
-		k_thread_join(&ps2_thread, K_MSEC(2));
 	
 
 }
-
+ struct zmk_keycode_state_changed *ev[16];
 int hid_listener(const zmk_event_t *eh) {
     const struct zmk_keycode_state_changed *ev = as_zmk_keycode_state_changed(eh);
     if (ev) {
